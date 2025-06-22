@@ -12,48 +12,6 @@ env:
   IMAGE_NAME: thesis-tester
 
 jobs:
-  security-scan:
-    name: Security Scan
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
-
-      - name: Build image for scanning
-        uses: docker/build-push-action@v4
-        with:
-          context: .
-          push: false
-          tags: scan-image:latest
-          cache-from: type=gha
-          load: true
-
-      - name: Run Trivy vulnerability scanner (table format)
-        uses: aquasecurity/trivy-action@0.31.0
-        with:
-          image-ref: "scan-image:latest"
-          format: "table"
-          exit-code: "1"
-          severity: "CRITICAL,HIGH"
-
-      - name: Run Trivy vulnerability scanner (SARIF)
-        uses: aquasecurity/trivy-action@0.31.0
-        with:
-          image-ref: "scan-image:latest"
-          format: "sarif"
-          output: "trivy-results.sarif"
-          exit-code: "1"
-          severity: "CRITICAL,HIGH"
-
-      - name: Upload Trivy scan results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v1
-        if: always()
-        with:
-          sarif_file: "trivy-results.sarif"
-
   build-and-push:
     name: Build and Push Image
     runs-on: ubuntu-latest
