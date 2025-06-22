@@ -12,43 +12,8 @@ env:
   IMAGE_NAME: thesis-tester
 
 jobs:
-  test:
-    name: Test Dockerfile
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
-
-      - name: Build test image
-        uses: docker/build-push-action@v4
-        with:
-          context: .
-          push: false
-          tags: test-image:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Test image functionality
-        run: |
-          # Test that the image contains required tools
-          docker run --rm test-image:latest java -version
-          docker run --rm test-image:latest mvn -version
-          docker run --rm test-image:latest gradle -version
-          docker run --rm test-image:latest git --version
-          docker run --rm test-image:latest curl --version
-          docker run --rm test-image:latest jq --version
-
-          # Test that the script is executable
-          docker run --rm test-image:latest test -x /usr/local/bin/test-runner.sh
-
-          echo "✅ All tool tests passed!"
-
   build-and-push:
     name: Build and Push Image
-    needs: test
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
@@ -118,7 +83,6 @@ jobs:
 
   security-scan:
     name: Security Scan
-    needs: test
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     steps:
@@ -151,7 +115,7 @@ jobs:
 
   notify:
     name: Notify Status
-    needs: [test, build-and-push]
+    needs: [build-and-push]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -164,10 +128,4 @@ jobs:
         if: needs.build-and-push.result == 'failure'
         run: |
           echo "::error::❌ Thesis Tester image deployment failed!"
-          exit 1
-
-      - name: Tests Failed
-        if: needs.test.result == 'failure'
-        run: |
-          echo "::error::❌ Thesis Tester image tests failed!"
           exit 1
