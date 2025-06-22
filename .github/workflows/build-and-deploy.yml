@@ -3,12 +3,8 @@ name: Build and Deploy Thesis Tester Image
 on:
   push:
     branches: [main, develop]
-    paths:
-      - "thesis-tester/**"
   pull_request:
     branches: [main]
-    paths:
-      - "thesis-tester/**"
   workflow_dispatch:
 
 env:
@@ -29,7 +25,7 @@ jobs:
       - name: Build test image
         uses: docker/build-push-action@v4
         with:
-          context: thesis-tester
+          context: .
           push: false
           tags: test-image:latest
           cache-from: type=gha
@@ -87,7 +83,7 @@ jobs:
       - name: Build and push Docker image
         uses: docker/build-push-action@v4
         with:
-          context: thesis-tester
+          context: .
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -135,7 +131,7 @@ jobs:
       - name: Build image for scanning
         uses: docker/build-push-action@v4
         with:
-          context: thesis-tester
+          context: .
           push: false
           tags: scan-image:latest
           cache-from: type=gha
