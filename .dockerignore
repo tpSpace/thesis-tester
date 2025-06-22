@@ -1,0 +1,45 @@
+# Git files
+.git
+.gitignore
+.github
+
+# Documentation
+README.md
+*.md
+
+# Build scripts (not needed in container)
+build-and-push.sh
+test-local.sh
+
+# Temporary files
+*.tmp
+*.log
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode
+.idea
+*.swp
+*.swo
+
+# Node modules (if any)
+node_modules
+npm-debug.log
+
+# Python cache (if any)
+__pycache__
+*.pyc
+*.pyo
+
+# Java build artifacts (if any test files are present)
+target/
+build/
+*.class
+*.jar
+*.war
+
+# Backup files
+*~
+*.bak
+*.backup 

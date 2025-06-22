@@ -1,0 +1,177 @@
+name: Build and Deploy Thesis Tester Image
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "thesis-tester/**"
+  pull_request:
+    branches: [main]
+    paths:
+      - "thesis-tester/**"
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: thesis-tester
+
+jobs:
+  test:
+    name: Test Dockerfile
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Build test image
+        uses: docker/build-push-action@v4
+        with:
+          context: thesis-tester
+          push: false
+          tags: test-image:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Test image functionality
+        run: |
+          # Test that the image contains required tools
+          docker run --rm test-image:latest java -version
+          docker run --rm test-image:latest mvn -version
+          docker run --rm test-image:latest gradle -version
+          docker run --rm test-image:latest git --version
+          docker run --rm test-image:latest curl --version
+          docker run --rm test-image:latest jq --version
+
+          # Test that the script is executable
+          docker run --rm test-image:latest test -x /usr/local/bin/test-runner.sh
+
+          echo "✅ All tool tests passed!"
+
+  build-and-push:
+    name: Build and Push Image
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v4
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: thesis-tester
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64,linux/arm64
+
+      - name: Generate deployment info
+        id: deploy-info
+        run: |
+          IMAGE_TAG="${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+          echo "image-tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+          echo "latest-tag=${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:latest" >> $GITHUB_OUTPUT
+
+      - name: Update thesis-llm configuration
+        if: success()
+        run: |
+          echo "🎉 Image built and pushed successfully!"
+          echo ""
+          echo "📋 Update your thesis-llm configuration:"
+          echo "=========================================="
+          echo ""
+          echo "1. In thesis-llm/k8s/configmap.yaml, update:"
+          echo "   tester-image: \"${{ steps.deploy-info.outputs.image-tag }}\""
+          echo ""
+          echo "2. Or use the latest tag:"
+          echo "   tester-image: \"${{ steps.deploy-info.outputs.latest-tag }}\""
+          echo ""
+          echo "3. Apply the configuration:"
+          echo "   kubectl apply -f thesis-llm/k8s/configmap.yaml"
+          echo "   kubectl rollout restart deployment/llm-grading-service -n my-thesis"
+
+  security-scan:
+    name: Security Scan
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Build image for scanning
+        uses: docker/build-push-action@v4
+        with:
+          context: thesis-tester
+          push: false
+          tags: scan-image:latest
+          cache-from: type=gha
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@0.31.0
+        with:
+          image-ref: "scan-image:latest"
+          format: "sarif"
+          output: "trivy-results.sarif"
+
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v1
+        if: always()
+        with:
+          sarif_file: "trivy-results.sarif"
+
+  notify:
+    name: Notify Status
+    needs: [test, build-and-push]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Deployment Success
+        if: needs.build-and-push.result == 'success'
+        run: |
+          echo "::notice::🎉 Thesis Tester image deployed successfully!"
+
+      - name: Deployment Failed
+        if: needs.build-and-push.result == 'failure'
+        run: |
+          echo "::error::❌ Thesis Tester image deployment failed!"
+          exit 1
+
+      - name: Tests Failed
+        if: needs.test.result == 'failure'
+        run: |
+          echo "::error::❌ Thesis Tester image tests failed!"
+          exit 1
