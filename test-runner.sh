@@ -215,10 +215,6 @@ parse_maven_test_results() {
         if [[ -n "$xml_files" ]]; then
             while IFS= read -r xml_file; do
                 if [[ -f "$xml_file" ]]; then
-                    # Extract test cases from XML using grep and sed
-                    local class_name
-                    class_name=$(grep -o 'testsuite.*name="[^"]*"' "$xml_file" | sed 's/.*name="\([^"]*\)".*/\1/' || echo "Unknown")
-                    
                     # Process each test case
                     while IFS= read -r testcase_line; do
                         if [[ -n "$testcase_line" ]]; then
@@ -226,27 +222,29 @@ parse_maven_test_results() {
                             test_name=$(echo "$testcase_line" | sed 's/.*name="\([^"]*\)".*/\1/')
                             
                             local passed="true"
-                            local output=""
+                            local output="Test passed"
+                            local error_output=""
                             
                             # Check if test failed
                             if grep -A 10 "testcase.*name=\"$test_name\"" "$xml_file" | grep -q "failure\|error"; then
                                 passed="false"
-                                output=$(grep -A 5 "failure\|error" "$xml_file" | head -1 | sed 's/<[^>]*>//g' || echo "Test failed")
+                                output="Test failed"
+                                error_output=$(grep -A 5 "failure\|error" "$xml_file" | head -1 | sed 's/<[^>]*>//g' || echo "Test failed")
                             fi
                             
-                            # Create test result JSON object
+                            # Create test result JSON object (thesis-llm schema compliant)
                             local test_result
                             test_result=$(jq -n \
                                 --arg testName "$test_name" \
-                                --arg className "$class_name" \
                                 --argjson passed "$passed" \
                                 --arg output "$output" \
+                                --arg errorOutput "$error_output" \
                                 '{
                                     testName: $testName,
-                                    className: $className,
                                     passed: $passed,
                                     output: $output,
-                                    durationMs: 0
+                                    errorOutput: ($errorOutput | if . == "" then null else . end),
+                                    durationMs: null
                                 }')
                             
                             results=$(echo "$results" | jq ". += [$test_result]")
@@ -272,10 +270,6 @@ parse_gradle_test_results() {
         if [[ -n "$xml_files" ]]; then
             while IFS= read -r xml_file; do
                 if [[ -f "$xml_file" ]]; then
-                    # Extract test cases from XML (similar to Maven parsing)
-                    local class_name
-                    class_name=$(grep -o 'testsuite.*name="[^"]*"' "$xml_file" | sed 's/.*name="\([^"]*\)".*/\1/' || echo "Unknown")
-                    
                     # Process each test case
                     while IFS= read -r testcase_line; do
                         if [[ -n "$testcase_line" ]]; then
@@ -283,27 +277,29 @@ parse_gradle_test_results() {
                             test_name=$(echo "$testcase_line" | sed 's/.*name="\([^"]*\)".*/\1/')
                             
                             local passed="true"
-                            local output=""
+                            local output="Test passed"
+                            local error_output=""
                             
                             # Check if test failed
                             if grep -A 10 "testcase.*name=\"$test_name\"" "$xml_file" | grep -q "failure\|error"; then
                                 passed="false"
-                                output=$(grep -A 5 "failure\|error" "$xml_file" | head -1 | sed 's/<[^>]*>//g' || echo "Test failed")
+                                output="Test failed"
+                                error_output=$(grep -A 5 "failure\|error" "$xml_file" | head -1 | sed 's/<[^>]*>//g' || echo "Test failed")
                             fi
                             
-                            # Create test result JSON object
+                            # Create test result JSON object (thesis-llm schema compliant)
                             local test_result
                             test_result=$(jq -n \
                                 --arg testName "$test_name" \
-                                --arg className "$class_name" \
                                 --argjson passed "$passed" \
                                 --arg output "$output" \
+                                --arg errorOutput "$error_output" \
                                 '{
                                     testName: $testName,
-                                    className: $className,
                                     passed: $passed,
                                     output: $output,
-                                    durationMs: 0
+                                    errorOutput: ($errorOutput | if . == "" then null else . end),
+                                    durationMs: null
                                 }')
                             
                             results=$(echo "$results" | jq ". += [$test_result]")
