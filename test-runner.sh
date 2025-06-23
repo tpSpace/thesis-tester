@@ -23,6 +23,8 @@ EXECUTION_LOGS="[]"
 COMPILATION_OUTPUT=""
 ERROR_MESSAGE=""
 EXIT_CODE=0
+EXTRACTED_CODE=""
+CODE_FILES="[]"
 
 # Logging function that also adds to execution logs
 log() {
@@ -66,6 +68,9 @@ output_final_result() {
     
     local completed_at=$(date -Iseconds)
     
+    # Log detailed results before outputting JSON
+    log_detailed_results "$status"
+    
     # Build the final result JSON
     jq -n \
         --arg gradingJobId "$GRADING_JOB_ID" \
@@ -77,6 +82,8 @@ output_final_result() {
         --arg errorMessage "$ERROR_MESSAGE" \
         --arg exitCode "$EXIT_CODE" \
         --argjson executionLogs "$EXECUTION_LOGS" \
+        --arg extractedCode "$EXTRACTED_CODE" \
+        --argjson codeFiles "$CODE_FILES" \
         '{
             gradingJobId: ($gradingJobId | tonumber),
             status: $status,
@@ -86,8 +93,132 @@ output_final_result() {
             compilationOutput: $compilationOutput,
             errorMessage: ($errorMessage | if . == "" then null else . end),
             exitCode: ($exitCode | tonumber),
-            executionLogs: $executionLogs
+            executionLogs: $executionLogs,
+            extractedCode: ($extractedCode | if . == "" then null else . end),
+            codeFiles: $codeFiles
         }'
+}
+
+# Extract student code from repository
+extract_student_code() {
+    log "INFO" "Extracting student code from repository"
+    cd "$REPO_DIR"
+    
+    local code_files="[]"
+    local main_code=""
+    
+    # Find all Java source files (excluding test files)
+    local java_files
+    java_files=$(find . -name "*.java" -type f | grep -v -i test | head -10) # Limit to 10 files to avoid huge output
+    
+    if [[ -n "$java_files" ]]; then
+        while IFS= read -r file_path; do
+            if [[ -f "$file_path" ]]; then
+                local file_name=$(basename "$file_path")
+                local relative_path="${file_path#./}"
+                local file_content
+                
+                # Read file content (limit to reasonable size)
+                if file_content=$(head -c 10000 "$file_path" 2>/dev/null); then
+                    log "INFO" "Extracted code from: $relative_path (${#file_content} characters)"
+                    
+                    # Create code file JSON object
+                    local code_file
+                    code_file=$(jq -n \
+                        --arg fileName "$file_name" \
+                        --arg filePath "$relative_path" \
+                        --arg content "$file_content" \
+                        --arg size "${#file_content}" \
+                        '{
+                            fileName: $fileName,
+                            filePath: $filePath,
+                            content: $content,
+                            size: ($size | tonumber)
+                        }')
+                    
+                    code_files=$(echo "$code_files" | jq ". += [$code_file]")
+                    
+                    # If this looks like the main implementation file, save it as main code
+                    if [[ "$file_name" != *"Test"* ]] && [[ "$file_name" != *"test"* ]] && [[ -z "$main_code" ]]; then
+                        main_code="$file_content"
+                    fi
+                fi
+            fi
+        done <<< "$java_files"
+    fi
+    
+    # Set global variables
+    CODE_FILES="$code_files"
+    EXTRACTED_CODE="$main_code"
+    
+    # Log the extracted code in execution logs
+    if [[ -n "$main_code" ]]; then
+        log "INFO" "Main student code extracted (${#main_code} characters)"
+        log "CODE" "```java
+$main_code
+```"
+    else
+        log "WARNING" "No main student code found"
+    fi
+    
+    log "INFO" "Code extraction completed - found $(echo "$code_files" | jq 'length') files"
+}
+
+# Log detailed results for debugging
+log_detailed_results() {
+    local status="$1"
+    
+    log "INFO" "=================== DETAILED TEST RESULTS ==================="
+    log "INFO" "Grading Job ID: $GRADING_JOB_ID"
+    log "INFO" "Status: $status"
+    log "INFO" "Repository: $REPO_URL"
+    log "INFO" "Commit: $GIT_COMMIT_HASH"
+    log "INFO" "Started: $START_TIME"
+    log "INFO" "Completed: $(date -Iseconds)"
+    
+    # Log test results in detail
+    local test_count
+    test_count=$(echo "$TEST_RESULTS" | jq 'length')
+    log "INFO" "Total tests executed: $test_count"
+    
+    if [[ $test_count -gt 0 ]]; then
+        local passed_count
+        local failed_count
+        passed_count=$(echo "$TEST_RESULTS" | jq '[.[] | select(.passed == true)] | length')
+        failed_count=$(echo "$TEST_RESULTS" | jq '[.[] | select(.passed == false)] | length')
+        
+        log "INFO" "Tests passed: $passed_count"
+        log "INFO" "Tests failed: $failed_count"
+        
+        # Log individual test results
+        echo "$TEST_RESULTS" | jq -r '.[] | "Test: \(.testName) - Passed: \(.passed) - Output: \(.output // "No output") - Error: \(.errorOutput // "No error")"' | while IFS= read -r line; do
+            log "TEST_RESULT" "$line"
+        done
+    fi
+    
+    # Log compilation output if available
+    if [[ -n "$COMPILATION_OUTPUT" ]]; then
+        log "COMPILATION" "Compilation output:"
+        log "COMPILATION" "$COMPILATION_OUTPUT"
+    fi
+    
+    # Log code files found
+    local code_file_count
+    code_file_count=$(echo "$CODE_FILES" | jq 'length')
+    log "INFO" "Code files extracted: $code_file_count"
+    
+    if [[ $code_file_count -gt 0 ]]; then
+        echo "$CODE_FILES" | jq -r '.[] | "File: \(.filePath) (\(.size) bytes)"' | while IFS= read -r line; do
+            log "CODE_FILE" "$line"
+        done
+    fi
+    
+    # Log error message if present
+    if [[ -n "$ERROR_MESSAGE" ]]; then
+        log "ERROR" "Error message: $ERROR_MESSAGE"
+    fi
+    
+    log "INFO" "=================== END DETAILED RESULTS ==================="
 }
 
 # Detect build system
@@ -287,14 +418,18 @@ run_plain_java_tests() {
         # Try to run the class
         if output=$(timeout 30 java -cp classes "$class_name" 2>&1); then
             log "INFO" "Test class $class_name executed successfully"
+            log "TEST_OUTPUT" "Output from $class_name: $output"
             if echo "$output" | grep -iq "fail\|error\|exception"; then
                 passed="false"
                 error_output="$output"
+                log "TEST_FAILED" "Test $class_name failed with output: $output"
+            else
+                log "TEST_PASSED" "Test $class_name passed with output: $output"
             fi
         else
             exit_code=$?
             passed="false"
-            error_output="Test class execution failed with exit code $exit_code"
+            error_output="Test class execution failed with exit code $exit_code: $(timeout 30 java -cp classes "$class_name" 2>&1 || echo "Failed to capture error output")"
             if [[ $exit_code -eq 124 ]]; then
                 error_output="Test class execution timed out (30 seconds)"
             fi
@@ -444,12 +579,15 @@ main() {
     # Step 1: Clone repository
     clone_repository
     
-    # Step 2: Detect build system
+    # Step 2: Extract student code
+    extract_student_code
+    
+    # Step 3: Detect build system
     local build_system
     build_system=$(detect_build_system)
     log "INFO" "Detected build system: $build_system"
     
-    # Step 3: Build project
+    # Step 4: Build project
     case "$build_system" in
         maven)
             build_maven
@@ -465,7 +603,7 @@ main() {
             ;;
     esac
     
-    # Step 4: Run tests
+    # Step 5: Run tests
     case "$build_system" in
         maven)
             run_maven_tests
