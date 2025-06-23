@@ -99,7 +99,14 @@ detect_build_system() {
     elif [[ -f "$REPO_DIR/Makefile" ]]; then
         echo "make"
     else
-        echo "unknown"
+        # Check for Java files - if we find .java files, use plain Java compilation
+        local java_files
+        java_files=$(find "$REPO_DIR" -name "*.java" 2>/dev/null | head -1)
+        if [[ -n "$java_files" ]]; then
+            echo "plain-java"
+        else
+            echo "unknown"
+        fi
     fi
 }
 
@@ -167,6 +174,34 @@ build_gradle() {
     log "INFO" "Gradle build successful"
 }
 
+# Build plain Java files
+build_plain_java() {
+    log "INFO" "Building plain Java files"
+    cd "$REPO_DIR"
+    
+    # Find all Java files
+    local java_files
+    java_files=$(find . -name "*.java" -type f)
+    
+    if [[ -z "$java_files" ]]; then
+        error_exit "No Java files found in repository"
+    fi
+    
+    log "INFO" "Found Java files: $(echo "$java_files" | tr '\n' ' ')"
+    
+    # Create a classes directory for compiled output
+    mkdir -p classes
+    
+    # Compile all Java files
+    if ! COMPILATION_OUTPUT=$(javac -d classes $java_files 2>&1); then
+        log "ERROR" "Java compilation failed"
+        log "ERROR" "Compilation output: $COMPILATION_OUTPUT"
+        error_exit "Compilation failed" 2
+    fi
+    
+    log "INFO" "Plain Java compilation successful"
+}
+
 # Run Maven tests and parse results
 run_maven_tests() {
     log "INFO" "Running Maven tests"
@@ -201,6 +236,91 @@ run_gradle_tests() {
     parse_gradle_test_results
     
     log "INFO" "Gradle tests completed"
+}
+
+# Run plain Java tests
+run_plain_java_tests() {
+    log "INFO" "Running plain Java tests"
+    cd "$REPO_DIR"
+    
+    # Find test classes (classes that contain "Test" in their name or have test methods)
+    local test_classes=()
+    local compiled_classes
+    compiled_classes=$(find classes -name "*.class" -type f | sed 's/classes\///g' | sed 's/\.class$//g' | tr '/' '.')
+    
+    # Look for classes that look like test classes
+    for class_name in $compiled_classes; do
+        local java_file=$(find . -name "*.java" -exec grep -l "class.*$class_name" {} \;)
+        if [[ -n "$java_file" ]] && (grep -q "test\|Test\|TEST" "$java_file" || [[ "$class_name" == *"Test"* ]] || [[ "$class_name" == *"Tester"* ]]); then
+            test_classes+=("$class_name")
+        fi
+    done
+    
+    if [[ ${#test_classes[@]} -eq 0 ]]; then
+        log "WARNING" "No test classes found, looking for main methods"
+        # If no test classes, try to find classes with main methods
+        for class_name in $compiled_classes; do
+            local java_file=$(find . -name "*.java" -exec grep -l "class.*$class_name" {} \;)
+            if [[ -n "$java_file" ]] && grep -q "public static void main" "$java_file"; then
+                test_classes+=("$class_name")
+            fi
+        done
+    fi
+    
+    if [[ ${#test_classes[@]} -eq 0 ]]; then
+        log "WARNING" "No test classes or main methods found, running all classes"
+        test_classes=($compiled_classes)
+    fi
+    
+    log "INFO" "Running test classes: ${test_classes[*]}"
+    
+    # Run each test class and collect results
+    local results="[]"
+    for class_name in "${test_classes[@]}"; do
+        log "INFO" "Running test class: $class_name"
+        
+        local output=""
+        local error_output=""
+        local passed="true"
+        local exit_code=0
+        
+        # Try to run the class
+        if output=$(timeout 30 java -cp classes "$class_name" 2>&1); then
+            log "INFO" "Test class $class_name executed successfully"
+            if echo "$output" | grep -iq "fail\|error\|exception"; then
+                passed="false"
+                error_output="$output"
+            fi
+        else
+            exit_code=$?
+            passed="false"
+            error_output="Test class execution failed with exit code $exit_code"
+            if [[ $exit_code -eq 124 ]]; then
+                error_output="Test class execution timed out (30 seconds)"
+            fi
+            log "WARNING" "Test class $class_name failed: $error_output"
+        fi
+        
+        # Create test result JSON object (thesis-llm schema compliant)
+        local test_result
+        test_result=$(jq -n \
+            --arg testName "$class_name" \
+            --argjson passed "$passed" \
+            --arg output "$output" \
+            --arg errorOutput "$error_output" \
+            '{
+                testName: $testName,
+                passed: $passed,
+                output: $output,
+                errorOutput: ($errorOutput | if . == "" then null else . end),
+                durationMs: null
+            }')
+        
+        results=$(echo "$results" | jq ". += [$test_result]")
+    done
+    
+    TEST_RESULTS="$results"
+    log "INFO" "Plain Java tests completed"
 }
 
 # Parse Maven test results from XML reports
@@ -337,6 +457,9 @@ main() {
         gradle)
             build_gradle
             ;;
+        plain-java)
+            build_plain_java
+            ;;
         *)
             error_exit "Unsupported build system: $build_system"
             ;;
@@ -349,6 +472,9 @@ main() {
             ;;
         gradle)
             run_gradle_tests
+            ;;
+        plain-java)
+            run_plain_java_tests
             ;;
     esac
     

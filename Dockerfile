@@ -32,7 +32,7 @@ RUN wget https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.
     rm gradle-${GRADLE_VERSION}-bin.zip
 
 # Production stage
-FROM eclipse-temurin:17-jre-alpine
+FROM eclipse-temurin:17-jdk-alpine
 
 # Install system tools and utilities
 RUN apk add --no-cache \
